@@ -150,7 +150,7 @@
             <div class="media-controls">
                 <div class="left-buttons">
                     <button class="upload-btn" onclick="document.getElementById('fileInput').click()" id="uploadButton" disabled>
-                        图片
+                        文件
                     </button>
                     <button class="voice-record-button" id="voiceButton" disabled>
                         <span id="voiceButtonText">录音</span>
@@ -173,9 +173,9 @@
                 <button id="sendButton" disabled onclick="MessageManager.sendMessage()">发送</button>
             </div>
 
-            <input type="file" id="fileInput" accept="image/*" style="display: none"
-                   onchange="MediaManager.handleImageSelect(event)">
-            <div id="imagePreviewContainer"></div>
+            <input type="file" id="fileInput" style="display: none"
+                   onchange="MediaManager.handleFileSelect(event)">
+            <div id="filePreviewContainer"></div>
             <div id="audioPreviewContainer"></div>
         </div>
     </div>
@@ -214,7 +214,7 @@
 <script>
     // 配置对象
     const Config = {
-        // ICE服务器配置，优先使用中国服务器
+        // ICE服务器配置
         iceServers: [
             {
                 "urls": [
@@ -252,7 +252,6 @@
 
         // 媒体配置
         media: {
-            maxImageSize: 3 * 1024 * 1024,  // 3MB
             maxAudioDuration: 60,  // 60秒
             imageCompression: 0.7  // 默认压缩率
         }
@@ -311,56 +310,11 @@
             }
         },
 
-        // 压缩图片
-        compressImage: function (dataUrl, quality = Config.media.imageCompression) {
-            return new Promise((resolve, reject) => {
-                const img = new Image();
-                img.onload = () => {
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-
-                    // 如果图片很大，按比例缩小
-                    let width = img.width;
-                    let height = img.height;
-                    const maxDimension = 1200;
-
-                    if (width > maxDimension || height > maxDimension) {
-                        if (width > height) {
-                            height = Math.round((height / width) * maxDimension);
-                            width = maxDimension;
-                        } else {
-                            width = Math.round((width / height) * maxDimension);
-                            height = maxDimension;
-                        }
-                    }
-
-                    canvas.width = width;
-                    canvas.height = height;
-
-                    // 绘制并压缩
-                    ctx.drawImage(img, 0, 0, width, height);
-                    resolve(canvas.toDataURL('image/jpeg', quality));
-                };
-
-                img.onerror = reject;
-                img.src = dataUrl;
-            });
-        },
-
         // 格式化时间
         formatTime: function (seconds) {
             const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
             const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
             return `${minutes}:${secs}`;
-        },
-
-        // 防抖函数
-        debounce: function (func, wait) {
-            let timeout;
-            return function (...args) {
-                clearTimeout(timeout);
-                timeout = setTimeout(() => func.apply(this, args), wait);
-            };
         },
 
         // 网络类型检测
@@ -402,7 +356,7 @@
         },
 
         // 分块发送大文件
-        sendInChunks: function (data, sendFunc, chunkSize = 16 * 1024) {
+        sendInChunks: function (data, sendFunc, chunkSize = 128 * 1024) {
             // 如果数据小于阈值，直接发送
             if (data.length < chunkSize) {
                 return sendFunc(data);
@@ -463,7 +417,7 @@
         }
     };
 
-    // 事件管理器（观察者模式）
+    // 事件管理器
     const EventEmitter = {
         events: {},
 
@@ -500,32 +454,211 @@
         }
     };
 
+    // 数据库管理器
+    const DBManager = {
+        db: null,
+        dbName: 'p2pChatDB',
+        dbVersion: 1,
+
+        // 初始化数据库
+        init: function() {
+            return new Promise((resolve, reject) => {
+                if (this.db) {
+                    resolve(this.db);
+                    return;
+                }
+
+                const request = indexedDB.open(this.dbName, this.dbVersion);
+
+                request.onerror = (event) => {
+                    Utils.log('数据库打开失败', Utils.logLevels.ERROR);
+                    reject('数据库打开失败');
+                };
+
+                request.onsuccess = (event) => {
+                    this.db = event.target.result;
+                    Utils.log('数据库打开成功', Utils.logLevels.INFO);
+                    resolve(this.db);
+                };
+
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+
+                    // 创建用户存储
+                    if (!db.objectStoreNames.contains('user')) {
+                        db.createObjectStore('user', { keyPath: 'id' });
+                    }
+
+                    // 创建联系人存储
+                    if (!db.objectStoreNames.contains('contacts')) {
+                        db.createObjectStore('contacts', { keyPath: 'id' });
+                    }
+
+                    // 创建聊天记录存储
+                    if (!db.objectStoreNames.contains('chats')) {
+                        db.createObjectStore('chats', { keyPath: 'id' });
+                    }
+
+                    // 创建群组存储
+                    if (!db.objectStoreNames.contains('groups')) {
+                        db.createObjectStore('groups', { keyPath: 'id' });
+                    }
+                };
+            });
+        },
+
+        // 存储数据
+        setItem: function(storeName, item) {
+            return new Promise((resolve, reject) => {
+                if (!this.db) {
+                    reject('数据库未初始化');
+                    return;
+                }
+
+                const transaction = this.db.transaction([storeName], 'readwrite');
+                const store = transaction.objectStore(storeName);
+                const request = store.put(item);
+
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject('存储数据失败');
+            });
+        },
+
+        // 获取数据
+        getItem: function(storeName, key) {
+            return new Promise((resolve, reject) => {
+                if (!this.db) {
+                    reject('数据库未初始化');
+                    return;
+                }
+
+                const transaction = this.db.transaction([storeName]);
+                const store = transaction.objectStore(storeName);
+                const request = store.get(key);
+
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject('获取数据失败');
+            });
+        },
+
+        // 获取存储中的所有数据
+        getAllItems: function(storeName) {
+            return new Promise((resolve, reject) => {
+                if (!this.db) {
+                    reject('数据库未初始化');
+                    return;
+                }
+
+                const transaction = this.db.transaction([storeName]);
+                const store = transaction.objectStore(storeName);
+                const request = store.getAll();
+
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject('获取数据失败');
+            });
+        },
+
+        // 删除数据
+        removeItem: function(storeName, key) {
+            return new Promise((resolve, reject) => {
+                if (!this.db) {
+                    reject('数据库未初始化');
+                    return;
+                }
+
+                const transaction = this.db.transaction([storeName], 'readwrite');
+                const store = transaction.objectStore(storeName);
+                const request = store.delete(key);
+
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject('删除数据失败');
+            });
+        },
+
+        // 清空存储
+        clearStore: function(storeName) {
+            return new Promise((resolve, reject) => {
+                if (!this.db) {
+                    reject('数据库未初始化');
+                    return;
+                }
+
+                const transaction = this.db.transaction([storeName], 'readwrite');
+                const store = transaction.objectStore(storeName);
+                const request = store.clear();
+
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject('清空数据失败');
+            });
+        }
+    };
+
     // 用户管理器
     const UserManager = {
         userId: null,
         userName: '我',
         contacts: {},
 
-        init: function() {
-            // 生成或恢复用户ID
-            this.userId = localStorage.getItem('userId') || Utils.generateId();
-            localStorage.setItem('userId', this.userId);
+        init: async function() {
+            try {
+                // 确保数据库初始化
+                await DBManager.init();
 
-            // 显示用户ID
-            document.getElementById('userIdValue').textContent = this.userId;
+                // 获取或生成用户ID
+                const userData = await DBManager.getItem('user', 'current');
+                if (userData) {
+                    this.userId = userData.userId;
+                } else {
+                    // 生成新用户ID
+                    this.userId = Utils.generateId();
+                    await DBManager.setItem('user', {
+                        id: 'current',
+                        userId: this.userId
+                    });
+                }
 
-            // 设置复制ID按钮
-            document.getElementById('copyIdBtn').addEventListener('click', () => {
-                navigator.clipboard.writeText(this.userId)
-                    .then(() => UIManager.showNotification('ID已复制到剪贴板', 'success'))
-                    .catch(() => UIManager.showNotification('复制失败，请手动复制', 'error'));
-            });
+                // 显示用户ID
+                document.getElementById('userIdValue').textContent = this.userId;
 
-            // 加载联系人
-            this.loadContacts();
+                // 设置复制ID按钮
+                document.getElementById('copyIdBtn').addEventListener('click', () => {
+                    navigator.clipboard.writeText(this.userId)
+                        .then(() => UIManager.showNotification('ID已复制到剪贴板', 'success'))
+                        .catch(() => UIManager.showNotification('复制失败，请手动复制', 'error'));
+                });
+
+                // 加载联系人
+                await this.loadContacts();
+            } catch (error) {
+                Utils.log(`用户初始化失败: ${error}`, Utils.logLevels.ERROR);
+                // 回退到localStorage
+                this.userId = localStorage.getItem('userId') || Utils.generateId();
+                localStorage.setItem('userId', this.userId);
+                document.getElementById('userIdValue').textContent = this.userId;
+                this.loadContactsFromLocalStorage();
+            }
         },
 
-        loadContacts: function() {
+        loadContacts: async function() {
+            try {
+                const contacts = await DBManager.getAllItems('contacts');
+                this.contacts = {};
+
+                if (contacts && contacts.length > 0) {
+                    contacts.forEach(contact => {
+                        this.contacts[contact.id] = contact;
+                    });
+                    ChatManager.renderChatList();
+                }
+            } catch (error) {
+                Utils.log(`加载联系人失败: ${error}`, Utils.logLevels.ERROR);
+                this.contacts = {};
+                // 尝试从localStorage加载
+                this.loadContactsFromLocalStorage();
+            }
+        },
+
+        loadContactsFromLocalStorage: function() {
             const saved = localStorage.getItem('contacts');
             if (saved) {
                 try {
@@ -538,11 +671,22 @@
             }
         },
 
-        saveContacts: function() {
-            localStorage.setItem('contacts', JSON.stringify(this.contacts));
+        saveContacts: async function() {
+            try {
+                for (const id in this.contacts) {
+                    await DBManager.setItem('contacts', this.contacts[id]);
+                }
+
+                // 备份到localStorage
+                localStorage.setItem('contacts', JSON.stringify(this.contacts));
+            } catch (error) {
+                Utils.log(`保存联系人失败: ${error}`, Utils.logLevels.ERROR);
+                // 保存到localStorage作为备份
+                localStorage.setItem('contacts', JSON.stringify(this.contacts));
+            }
         },
 
-        addContact: function(id, name) {
+        addContact: async function(id, name) {
             if (id === this.userId) {
                 UIManager.showNotification('不能添加自己为联系人', 'error');
                 return false;
@@ -553,7 +697,7 @@
                 return false;
             }
 
-            this.contacts[id] = {
+            const contact = {
                 id: id,
                 name: name || `用户${id.substring(0, 4)}`,
                 lastMessage: '',
@@ -561,42 +705,78 @@
                 unread: 0
             };
 
-            this.saveContacts();
-            ChatManager.renderChatList();
-            return true;
-        },
+            this.contacts[id] = contact;
 
-        removeContact: function(id) {
-            if (this.contacts[id]) {
-                delete this.contacts[id];
+            try {
+                await DBManager.setItem('contacts', contact);
+                ChatManager.renderChatList();
+                return true;
+            } catch (error) {
+                Utils.log(`添加联系人失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份策略：保存到localStorage
                 this.saveContacts();
                 ChatManager.renderChatList();
                 return true;
             }
+        },
+
+        removeContact: async function(id) {
+            if (this.contacts[id]) {
+                delete this.contacts[id];
+
+                try {
+                    await DBManager.removeItem('contacts', id);
+                    ChatManager.renderChatList();
+                    return true;
+                } catch (error) {
+                    Utils.log(`删除联系人失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份策略：保存到localStorage
+                    this.saveContacts();
+                    ChatManager.renderChatList();
+                    return true;
+                }
+            }
             return false;
         },
 
-        updateContactLastMessage: function(id, message, isUnread = false) {
+        updateContactLastMessage: async function(id, message, isUnread = false) {
             if (this.contacts[id]) {
                 this.contacts[id].lastMessage = message;
                 this.contacts[id].lastTime = new Date().toISOString();
                 if (isUnread) {
                     this.contacts[id].unread = (this.contacts[id].unread || 0) + 1;
                 }
-                this.saveContacts();
-                ChatManager.renderChatList();
+
+                try {
+                    await DBManager.setItem('contacts', this.contacts[id]);
+                    ChatManager.renderChatList();
+                } catch (error) {
+                    Utils.log(`更新联系人最后消息失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份策略：保存到localStorage
+                    this.saveContacts();
+                    ChatManager.renderChatList();
+                }
             }
         },
 
-        clearUnread: function(id) {
+        clearUnread: async function(id) {
             if (this.contacts[id]) {
                 this.contacts[id].unread = 0;
-                this.saveContacts();
-                ChatManager.renderChatList();
+
+                try {
+                    await DBManager.setItem('contacts', this.contacts[id]);
+                    ChatManager.renderChatList();
+                } catch (error) {
+                    Utils.log(`清除未读数失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份策略：保存到localStorage
+                    this.saveContacts();
+                    ChatManager.renderChatList();
+                }
             }
         },
+
         // 清空所有聊天列表
-        clearAllContacts: function() {
+        clearAllContacts: async function() {
             // 确认对话框
             if (!confirm('确定要清空所有聊天吗？此操作不可撤销。')) {
                 return false;
@@ -608,35 +788,44 @@
             // 清空联系人对象
             this.contacts = {};
 
-            // 保存变更
-            this.saveContacts();
+            try {
+                // 清空IndexedDB中的联系人
+                await DBManager.clearStore('contacts');
 
-            // 关闭所有连接
-            contactIds.forEach(peerId => {
-                if (ConnectionManager.connections[peerId]) {
-                    ConnectionManager.close(peerId);
+                // 关闭所有连接
+                contactIds.forEach(peerId => {
+                    if (ConnectionManager.connections[peerId]) {
+                        ConnectionManager.close(peerId);
+                    }
+                });
+
+                // 更新UI
+                ChatManager.renderChatList();
+
+                // 清空当前聊天
+                if (ChatManager.currentChatId) {
+                    ChatManager.currentChatId = null;
+                    document.getElementById('currentChatTitle').textContent = '未选择聊天';
+                    document.getElementById('chatBox').innerHTML = '';
+
+                    // 禁用聊天界面
+                    UIManager.enableChatInterface(false);
                 }
-            });
 
-            // 更新UI
-            ChatManager.renderChatList();
+                // 通知用户
+                UIManager.showNotification('所有联系人已清空', 'info');
+                Utils.log('所有联系人已清空', Utils.logLevels.INFO);
 
-            // 清空当前聊天
-            if (ChatManager.currentChatId) {
-                ChatManager.currentChatId = null;
-                document.getElementById('currentChatTitle').textContent = '未选择聊天';
-                document.getElementById('chatBox').innerHTML = '';
+                // 清除localStorage备份
+                localStorage.removeItem('contacts');
 
-                // 禁用聊天界面
-                UIManager.enableChatInterface(false);
+                return true;
+            } catch (error) {
+                Utils.log(`清空联系人失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份策略：保存到localStorage
+                localStorage.removeItem('contacts');
+                return true;
             }
-
-            // 通知用户
-            UIManager.showNotification('所有联系人已清空', 'info');
-
-            Utils.log('所有联系人已清空', Utils.logLevels.INFO);
-
-            return true;
         }
     };
 
@@ -645,9 +834,9 @@
         currentChatId: null,
         chats: {},
 
-        init: function() {
+        init: async function() {
             // 初始化聊天列表
-            this.loadChats();
+            await this.loadChats();
 
             // 设置新建聊天按钮事件
             document.getElementById('newChatBtn').addEventListener('click', () => {
@@ -699,7 +888,25 @@
             });
         },
 
-        loadChats: function() {
+        loadChats: async function() {
+            try {
+                await DBManager.init();
+                const chatItems = await DBManager.getAllItems('chats');
+                this.chats = {};
+
+                if (chatItems && chatItems.length > 0) {
+                    chatItems.forEach(item => {
+                        this.chats[item.id] = item.messages || [];
+                    });
+                }
+            } catch (error) {
+                Utils.log(`加载聊天记录失败: ${error}`, Utils.logLevels.ERROR);
+                // 尝试从localStorage加载
+                this.loadChatsFromLocalStorage();
+            }
+        },
+
+        loadChatsFromLocalStorage: function() {
             const saved = localStorage.getItem('chats');
             if (saved) {
                 try {
@@ -711,8 +918,22 @@
             }
         },
 
-        saveChats: function() {
-            localStorage.setItem('chats', JSON.stringify(this.chats));
+        saveChats: async function() {
+            if (this.currentChatId) {
+                try {
+                    await DBManager.setItem('chats', {
+                        id: this.currentChatId,
+                        messages: this.chats[this.currentChatId] || []
+                    });
+
+                    // 备份到localStorage
+                    localStorage.setItem('chats', JSON.stringify(this.chats));
+                } catch (error) {
+                    Utils.log(`保存聊天记录失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份到localStorage
+                    localStorage.setItem('chats', JSON.stringify(this.chats));
+                }
+            }
         },
 
         renderChatList: function() {
@@ -842,7 +1063,7 @@
             }
         },
 
-        addMessage: function(chatId, message) {
+        addMessage: async function(chatId, message) {
             if (!this.chats[chatId]) {
                 this.chats[chatId] = [];
             }
@@ -855,31 +1076,66 @@
                 document.getElementById('chatBox').scrollTop = document.getElementById('chatBox').scrollHeight;
             } else {
                 // 更新未读消息计数
-                UserManager.updateContactLastMessage(
-                    chatId,
-                    message.type === 'text' ? message.content : '[媒体消息]',
-                    true
-                );
+                if (chatId.startsWith('group_')) {
+                    GroupManager.updateGroupLastMessage(
+                        chatId,
+                        message.type === 'text' ? message.content : '[媒体消息]',
+                        true
+                    );
+                } else {
+                    UserManager.updateContactLastMessage(
+                        chatId,
+                        message.type === 'text' ? message.content : '[媒体消息]',
+                        true
+                    );
+                }
             }
 
-            this.saveChats();
+            try {
+                // 保存到IndexedDB
+                await DBManager.setItem('chats', {
+                    id: chatId,
+                    messages: this.chats[chatId]
+                });
+            } catch (error) {
+                Utils.log(`保存消息失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份到localStorage
+                localStorage.setItem('chats', JSON.stringify(this.chats));
+            }
         },
 
-        clearChat: function(chatId) {
+        clearChat: async function(chatId) {
             if (chatId) {
                 this.chats[chatId] = [];
-                this.saveChats();
 
-                if (chatId === this.currentChatId) {
-                    document.getElementById('chatBox').innerHTML = '';
+                try {
+                    await DBManager.setItem('chats', {
+                        id: chatId,
+                        messages: []
+                    });
+
+                    if (chatId === this.currentChatId) {
+                        document.getElementById('chatBox').innerHTML = '';
+                    }
+
+                    return true;
+                } catch (error) {
+                    Utils.log(`清空聊天记录失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份到localStorage
+                    localStorage.setItem('chats', JSON.stringify(this.chats));
+
+                    if (chatId === this.currentChatId) {
+                        document.getElementById('chatBox').innerHTML = '';
+                    }
+
+                    return true;
                 }
-
-                return true;
             }
             return false;
         },
+
         // 清空所有聊天记录
-        clearAllChats: function() {
+        clearAllChats: async function() {
             // 确认对话框
             if (!confirm('确定要清空所有聊天记录吗？此操作不可撤销。')) {
                 return;
@@ -887,35 +1143,68 @@
 
             // 清空所有聊天记录
             this.chats = {};
-            this.saveChats();
 
-            // 如果当前有打开的聊天，清空聊天框
-            if (this.currentChatId) {
-                document.getElementById('chatBox').innerHTML = '';
+            try {
+                await DBManager.clearStore('chats');
 
-                // 添加系统消息提示
-                const systemMessage = document.createElement('div');
-                systemMessage.className = 'system-message';
-                systemMessage.textContent = '所有聊天记录已清空';
-                document.getElementById('chatBox').appendChild(systemMessage);
+                // 如果当前有打开的聊天，清空聊天框
+                if (this.currentChatId) {
+                    document.getElementById('chatBox').innerHTML = '';
+
+                    // 添加系统消息提示
+                    const systemMessage = document.createElement('div');
+                    systemMessage.className = 'system-message';
+                    systemMessage.textContent = '所有聊天记录已清空';
+                    document.getElementById('chatBox').appendChild(systemMessage);
+                }
+
+                // 更新所有联系人的最后消息
+                for (const contactId in UserManager.contacts) {
+                    UserManager.contacts[contactId].lastMessage = '';
+                    UserManager.contacts[contactId].unread = 0;
+                }
+                UserManager.saveContacts();
+
+                // 更新群组的最后消息
+                for (const groupId in GroupManager.groups) {
+                    GroupManager.groups[groupId].lastMessage = '';
+                    GroupManager.groups[groupId].unread = 0;
+                }
+                GroupManager.saveGroups();
+
+                // 更新聊天列表
+                this.renderChatList();
+
+                // 通知用户
+                UIManager.showNotification('所有聊天记录已清空', 'info');
+                Utils.log('所有聊天记录已清空', Utils.logLevels.INFO);
+
+                // 清除localStorage备份
+                localStorage.removeItem('chats');
+
+                return true;
+            } catch (error) {
+                Utils.log(`清空所有聊天记录失败: ${error}`, Utils.logLevels.ERROR);
+
+                // 备份到localStorage
+                localStorage.removeItem('chats');
+
+                // 如果当前有打开的聊天，清空聊天框
+                if (this.currentChatId) {
+                    document.getElementById('chatBox').innerHTML = '';
+
+                    // 添加系统消息提示
+                    const systemMessage = document.createElement('div');
+                    systemMessage.className = 'system-message';
+                    systemMessage.textContent = '所有聊天记录已清空';
+                    document.getElementById('chatBox').appendChild(systemMessage);
+                }
+
+                // 更新聊天列表
+                this.renderChatList();
+
+                return true;
             }
-
-            // 更新所有联系人的最后消息
-            for (const contactId in UserManager.contacts) {
-                UserManager.contacts[contactId].lastMessage = '';
-                UserManager.contacts[contactId].unread = 0;
-            }
-            UserManager.saveContacts();
-
-            // 更新聊天列表
-            this.renderChatList();
-
-            // 通知用户
-            UIManager.showNotification('所有聊天记录已清空', 'info');
-
-            Utils.log('所有聊天记录已清空', Utils.logLevels.INFO);
-
-            return true;
         }
     };
 
@@ -1321,9 +1610,15 @@
                                     ChatManager.addMessage(peerId, fullMessage);
 
                                     // 更新联系人最后消息
-                                    let previewText = '媒体消息';
-                                    if (fullMessage.type === 'image') previewText = '[图片]';
-                                    if (fullMessage.type === 'audio') previewText = '[语音]';
+                                    let previewText = '[文件]';
+                                    if (fullMessage.type === 'file' || fullMessage.type === 'image') {
+                                        if (fullMessage.fileType) {
+                                            if (fullMessage.fileType.startsWith('image/')) previewText = '[图片]';
+                                            else if (fullMessage.fileType.startsWith('video/')) previewText = '[视频]';
+                                            else if (fullMessage.fileType.startsWith('audio/')) previewText = '[音频]';
+                                        }
+                                    }
+                                    else if (fullMessage.type === 'audio') previewText = '[语音]';
 
                                     UserManager.updateContactLastMessage(
                                         peerId,
@@ -1342,8 +1637,15 @@
                             let previewText = '';
                             if (message.type === 'text') {
                                 previewText = message.content;
-                            } else if (message.type === 'image') {
-                                previewText = '[图片]';
+                            } else if (message.type === 'file' || message.type === 'image') {
+                                if (message.fileType) {
+                                    if (message.fileType.startsWith('image/')) previewText = '[图片]';
+                                    else if (message.fileType.startsWith('video/')) previewText = '[视频]';
+                                    else if (message.fileType.startsWith('audio/')) previewText = '[音频]';
+                                    else previewText = '[文件]';
+                                } else {
+                                    previewText = '[文件]';
+                                }
                             } else if (message.type === 'audio') {
                                 previewText = '[语音]';
                             } else {
@@ -1571,6 +1873,7 @@
                 (conn.peerConnection.iceConnectionState === 'connected' ||
                     conn.peerConnection.iceConnectionState === 'completed');
         },
+
         // 创建连接请求
         createOffer: async function () {
             if (!UIManager.checkWebRTCSupport()) return;
@@ -1640,6 +1943,7 @@
                 UIManager.updateStatus('创建连接请求失败');
             }
         },
+
         // 创建连接响应
         createAnswer: async function () {
             try {
@@ -1784,6 +2088,7 @@
                 return false;
             }
         },
+
         // 重置所有连接
         resetAllConnections: function() {
             // 确认对话框
@@ -2065,6 +2370,7 @@
                 }
             }, 10000); // 10秒后自动关闭
         },
+
         // 显示重连提示
         showReconnectPrompt: function(peerId, onReconnectSuccess) {
             // 创建重连提示元素
@@ -2243,7 +2549,7 @@
 
     // 消息管理器
     const MessageManager = {
-        selectedImage: null,
+        selectedFile: null,
         audioData: null,
         audioDuration: 0,
 
@@ -2271,7 +2577,7 @@
             if (!isGroupChat) {
                 const isConnected = ConnectionManager.isConnectedTo(ChatManager.currentChatId);
 
-                if (!isConnected && (message || this.selectedImage || this.audioData)) {
+                if (!isConnected && (message || this.selectedFile || this.audioData)) {
                     // 连接未建立，显示重连提示
                     UIManager.showReconnectPrompt(ChatManager.currentChatId, () => {
                         // 重连成功后的回调，重新尝试发送消息
@@ -2281,7 +2587,7 @@
                 }
             }
 
-            if (!message && !this.selectedImage && !this.audioData) {
+            if (!message && !this.selectedFile && !this.audioData) {
                 return;
             }
 
@@ -2317,35 +2623,47 @@
                 this.cancelAudioData();
             }
 
-            // 发送图片消息
-            if (this.selectedImage) {
-                const imageMessage = {
-                    type: 'image',
-                    data: this.selectedImage,
+            // 发送文件消息
+            if (this.selectedFile) {
+                // 生成唯一文件ID
+                const fileId = `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+
+                const fileMessage = {
+                    type: 'file',  // 统一使用file类型
+                    fileId: fileId,
+                    fileName: this.selectedFile.name,
+                    fileType: this.selectedFile.type,
+                    fileSize: this.selectedFile.size,
+                    data: this.selectedFile.data,  // 这里包含文件的base64数据
                     sender: UserManager.userId,
                     timestamp: new Date().toISOString()
                 };
 
                 if (isGroupChat) {
                     // 发送到群组
-                    GroupManager.broadcastToGroup(ChatManager.currentChatId, imageMessage);
+                    GroupManager.broadcastToGroup(ChatManager.currentChatId, fileMessage);
                 } else {
                     // 发送到个人
-                    Utils.sendInChunks(JSON.stringify(imageMessage),
+                    Utils.sendInChunks(JSON.stringify(fileMessage),
                         (data) => ConnectionManager.connections[ChatManager.currentChatId].dataChannel.send(data));
                 }
 
                 // 添加到聊天记录
-                ChatManager.addMessage(ChatManager.currentChatId, imageMessage);
+                ChatManager.addMessage(ChatManager.currentChatId, fileMessage);
 
                 // 更新最后消息
+                let filePreview = '[文件]';
+                if (this.selectedFile.type.startsWith('image/')) filePreview = '[图片]';
+                if (this.selectedFile.type.startsWith('video/')) filePreview = '[视频]';
+                if (this.selectedFile.type.startsWith('audio/')) filePreview = '[音频]';
+
                 if (isGroupChat) {
-                    GroupManager.updateGroupLastMessage(ChatManager.currentChatId, '[图片]');
+                    GroupManager.updateGroupLastMessage(ChatManager.currentChatId, filePreview);
                 } else {
-                    UserManager.updateContactLastMessage(ChatManager.currentChatId, '[图片]');
+                    UserManager.updateContactLastMessage(ChatManager.currentChatId, filePreview);
                 }
 
-                this.cancelImageData();
+                this.cancelFileData();
             }
 
             // 发送文本消息
@@ -2431,40 +2749,78 @@
                             : message.duration;
 
                         audioDiv.innerHTML = `
-                    <button onclick="event.stopPropagation(); MediaManager.playAudio(this)" data-audio="${message.data}">
-                        播放
-                    </button>
-                    <div class="voice-wave">
-                        ${Array(5).fill('<div class="wave-bar"></div>').join('')}
-                    </div>
-                    <span class="duration">${formattedDuration}</span>
-                `;
+                <button onclick="event.stopPropagation(); MediaManager.playAudio(this)" data-audio="${message.data}">
+                    播放
+                </button>
+                <div class="voice-wave">
+                    ${Array(5).fill('<div class="wave-bar"></div>').join('')}
+                </div>
+                <span class="duration">${formattedDuration}</span>
+            `;
                         messageDiv.appendChild(audioDiv);
                         break;
 
-                    case 'image':
-                        const img = document.createElement('img');
-                        img.src = message.data;
-                        img.className = 'image-preview';
-                        img.onclick = () => {
-                            // 点击图片时放大显示
-                            const modal = document.createElement('div');
-                            modal.style = `
-                        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                        background: rgba(0,0,0,0.8); display: flex; align-items: center;
-                        justify-content: center; z-index: 1000; cursor: pointer;
+                    case 'file':
+                        // 处理文件消息
+                        const fileDiv = document.createElement('div');
+                        fileDiv.className = 'file-message';
+
+                        // 检查是否有文件数据
+                        const fileData = message.data || '';
+
+                        // 根据文件类型决定展示方式
+                        if (message.fileType && message.fileType.startsWith('image/')) {
+                            // 图片
+                            fileDiv.innerHTML = `
+                        ${fileData ? `<img src="${fileData}" class="file-preview-img" alt="${message.fileName}"
+                             onclick="MessageManager.showFullImage('${fileData}')">` : '<div class="file-error">图片数据丢失</div>'}
                     `;
+                        } else if (message.fileType && message.fileType.startsWith('video/')) {
+                            // 视频
+                            fileDiv.innerHTML = `
+                        ${fileData ? `<video controls class="file-preview-video">
+                            <source src="${fileData}" type="${message.fileType}">
+                            您的浏览器不支持视频预览
+                        </video>` : '<div class="file-error">视频数据丢失</div>'}
+                    `;
+                        } else {
+                            // 其他文件类型
+                            const fileSize = MediaManager.formatFileSize(message.fileSize || 0);
+                            const fileIcon = MediaManager.getFileIcon(message.fileType);
 
-                            const fullImg = document.createElement('img');
-                            fullImg.src = message.data;
-                            fullImg.style = 'max-width: 90%; max-height: 90%; object-fit: contain;';
+                            fileDiv.innerHTML = `
+                        <div class="file-info">
+                            <div class="file-icon">${fileIcon}</div>
+                            <div class="file-details">
+                                <div class="file-name">${message.fileName || '未知文件'}</div>
+                                <div class="file-meta">
+                                    <span class="file-size">${fileSize}</span>
+                                    <span class="file-type">${message.fileType || '未知类型'}</span>
+                                </div>
+                            </div>
+                            ${fileData ? `<a href="${fileData}" download="${message.fileName}" class="download-btn">下载</a>` :
+                                '<span class="download-error">下载失败</span>'}
+                        </div>
+                    `;
+                        }
 
-                            modal.appendChild(fullImg);
-                            document.body.appendChild(modal);
+                        messageDiv.appendChild(fileDiv);
+                        break;
 
-                            modal.onclick = () => document.body.removeChild(modal);
-                        };
-                        messageDiv.appendChild(img);
+                    // 兼容旧版本的image类型，将其视为file类型处理
+                    case 'image':
+                        const imgDiv = document.createElement('div');
+                        imgDiv.className = 'file-message';
+
+                        // 检查是否有文件数据
+                        const imgData = message.data || '';
+
+                        imgDiv.innerHTML = `
+                    ${imgData ? `<img src="${imgData}" class="file-preview-img" alt="${message.fileName || '图片'}"
+                         onclick="MessageManager.showFullImage('${imgData}')">` : '<div class="file-error">图片数据丢失</div>'}
+                `;
+
+                        messageDiv.appendChild(imgDiv);
                         break;
 
                     case 'text':
@@ -2497,6 +2853,25 @@
 
             chatBox.appendChild(messageDiv);
             chatBox.scrollTop = chatBox.scrollHeight;
+        },
+
+        // 显示全屏图片
+        showFullImage: function(src) {
+            const modal = document.createElement('div');
+            modal.style = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); display: flex; align-items: center;
+            justify-content: center; z-index: 1000; cursor: pointer;
+        `;
+
+            const fullImg = document.createElement('img');
+            fullImg.src = src;
+            fullImg.style = 'max-width: 90%; max-height: 90%; object-fit: contain;';
+
+            modal.appendChild(fullImg);
+            document.body.appendChild(modal);
+
+            modal.onclick = () => document.body.removeChild(modal);
         },
 
         formatMessageText: function(text) {
@@ -2615,10 +2990,10 @@
             }
         },
 
-        // 取消图片数据
-        cancelImageData: function () {
-            this.selectedImage = null;
-            document.getElementById('imagePreviewContainer').innerHTML = '';
+        // 取消文件数据
+        cancelFileData: function () {
+            this.selectedFile = null;
+            document.getElementById('filePreviewContainer').innerHTML = '';
             document.getElementById('fileInput').value = '';
         },
 
@@ -2810,18 +3185,15 @@
             }
         },
 
-        // 处理图片选择
-        handleImageSelect: async function (event) {
+        // 处理文件选择方法
+        handleFileSelect: async function (event) {
             const file = event.target.files[0];
             if (!file) return;
 
-            if (!file.type.startsWith('image/')) {
-                alert('请选择图片文件');
-                return;
-            }
-
-            if (file.size > Config.media.maxImageSize) {
-                alert(`图片大小不能超过 ${Config.media.maxImageSize / 1024 / 1024} MB`);
+            // 检查文件大小
+            const maxFileSize = 10 * 1024 * 1024; // 10MB
+            if (file.size > maxFileSize) {
+                alert(`文件大小不能超过 ${maxFileSize / 1024 / 1024} MB`);
                 return;
             }
 
@@ -2829,28 +3201,120 @@
                 const reader = new FileReader();
 
                 reader.onload = async (e) => {
-                    // 压缩图片
-                    const compressedImage = await Utils.compressImage(e.target.result);
-                    MessageManager.selectedImage = compressedImage;
-                    this.displayImagePreview(compressedImage);
+                    const fileData = e.target.result;
+                    const fileType = file.type;
+                    const fileName = file.name;
+                    const fileSize = file.size;
+
+                    // 设置消息对象
+                    MessageManager.selectedFile = {
+                        data: fileData,
+                        type: fileType,
+                        name: fileName,
+                        size: fileSize
+                    };
+
+                    // 显示文件预览
+                    this.displayFilePreview(MessageManager.selectedFile);
                 };
 
+                // 使用readAsDataURL读取为base64格式
                 reader.readAsDataURL(file);
             } catch (error) {
-                Utils.log(`处理图片失败: ${error.message}`, Utils.logLevels.ERROR);
-                alert('处理图片失败');
+                Utils.log(`处理文件失败: ${error.message}`, Utils.logLevels.ERROR);
+                alert('处理文件失败');
             }
         },
 
-        // 显示图片预览
-        displayImagePreview: function (dataUrl) {
-            const container = document.getElementById('imagePreviewContainer');
-            container.innerHTML = `
-            <div style="position: relative; display: inline-block;">
-                <img src="${dataUrl}" class="image-preview" alt="">
-                <button onclick="MessageManager.cancelImageData()">取消</button>
-            </div>
-        `;
+        // 显示文件预览方法
+        displayFilePreview: function (fileObj) {
+            const container = document.getElementById('filePreviewContainer');
+            const fileType = fileObj.type;
+            const fileName = fileObj.name;
+            let previewHtml = '';
+
+            // 根据文件类型显示不同预览
+            if (fileType.startsWith('image/')) {
+                // 图片预览
+                previewHtml = `
+                <div class="file-preview">
+                    <div class="file-preview-header">
+                        <span>${fileName}</span>
+                        <button onclick="MessageManager.cancelFileData()">取消</button>
+                    </div>
+                    <div class="file-preview-content">
+                        <img src="${fileObj.data}" class="image-preview" alt="${fileName}">
+                    </div>
+                </div>
+            `;
+            } else if (fileType.startsWith('video/')) {
+                // 视频预览
+                previewHtml = `
+                <div class="file-preview">
+                    <div class="file-preview-header">
+                        <span>${fileName}</span>
+                        <button onclick="MessageManager.cancelFileData()">取消</button>
+                    </div>
+                    <div class="file-preview-content">
+                        <video controls class="video-preview">
+                            <source src="${fileObj.data}" type="${fileType}">
+                            您的浏览器不支持视频预览
+                        </video>
+                    </div>
+                </div>
+            `;
+            } else {
+                // 其他文件类型，显示文件信息
+                const fileSize = this.formatFileSize(fileObj.size);
+                const fileIcon = this.getFileIcon(fileType);
+
+                previewHtml = `
+                <div class="file-preview">
+                    <div class="file-preview-header">
+                        <span>${fileName}</span>
+                        <button onclick="MessageManager.cancelFileData()">取消</button>
+                    </div>
+                    <div class="file-preview-content file-info">
+                        <div class="file-icon">${fileIcon}</div>
+                        <div class="file-details">
+                            <div class="file-name">${fileName}</div>
+                            <div class="file-size">${fileSize}</div>
+                            <div class="file-type">${fileType || '未知类型'}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            }
+
+            container.innerHTML = previewHtml;
+        },
+
+        // 格式化文件大小
+        formatFileSize: function(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        },
+
+        // 获取文件图标
+        getFileIcon: function(mimeType) {
+            if (!mimeType) return '📄';
+
+            if (mimeType.startsWith('image/')) return '🖼️';
+            if (mimeType.startsWith('video/')) return '🎬';
+            if (mimeType.startsWith('audio/')) return '🎵';
+
+            if (mimeType === 'application/pdf') return '📕';
+            if (mimeType.includes('word')) return '📘';
+            if (mimeType.includes('excel') || mimeType.includes('spreadsheet')) return '📗';
+            if (mimeType.includes('powerpoint') || mimeType.includes('presentation')) return '📙';
+
+            if (mimeType.includes('zip') || mimeType.includes('compressed')) return '🗜️';
+            if (mimeType.includes('text')) return '📝';
+
+            return '📄';
         },
 
         // 显示音频预览
@@ -3430,9 +3894,9 @@
         groups: {},
         currentGroupId: null,
 
-        init: function() {
-            // 从本地存储加载群聊
-            this.loadGroups();
+        init: async function() {
+            // 从数据库加载群聊
+            await this.loadGroups();
 
             // 设置新建群聊按钮事件
             document.getElementById('newGroupBtn').addEventListener('click', () => {
@@ -3483,7 +3947,26 @@
             });
         },
 
-        loadGroups: function() {
+        loadGroups: async function() {
+            try {
+                await DBManager.init();
+                const groupItems = await DBManager.getAllItems('groups');
+                this.groups = {};
+
+                if (groupItems && groupItems.length > 0) {
+                    groupItems.forEach(group => {
+                        this.groups[group.id] = group;
+                    });
+                    this.renderGroupList();
+                }
+            } catch (error) {
+                Utils.log(`加载群聊失败: ${error}`, Utils.logLevels.ERROR);
+                // 尝试从localStorage加载
+                this.loadGroupsFromLocalStorage();
+            }
+        },
+
+        loadGroupsFromLocalStorage: function() {
             const saved = localStorage.getItem('groups');
             if (saved) {
                 try {
@@ -3496,13 +3979,24 @@
             }
         },
 
-        saveGroups: function() {
-            localStorage.setItem('groups', JSON.stringify(this.groups));
+        saveGroups: async function() {
+            try {
+                for (const id in this.groups) {
+                    await DBManager.setItem('groups', this.groups[id]);
+                }
+
+                // 备份到localStorage
+                localStorage.setItem('groups', JSON.stringify(this.groups));
+            } catch (error) {
+                Utils.log(`保存群聊失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份到localStorage
+                localStorage.setItem('groups', JSON.stringify(this.groups));
+            }
         },
 
-        createGroup: function(name) {
+        createGroup: async function(name) {
             const groupId = 'group_' + Utils.generateId();
-            this.groups[groupId] = {
+            const group = {
                 id: groupId,
                 name: name,
                 owner: UserManager.userId,
@@ -3512,12 +4006,23 @@
                 unread: 0
             };
 
-            this.saveGroups();
-            this.renderGroupList();
-            UIManager.showNotification(`群聊"${name}"已创建`, 'success');
+            this.groups[groupId] = group;
 
-            return groupId;
+            try {
+                await DBManager.setItem('groups', group);
+                this.renderGroupList();
+                UIManager.showNotification(`群聊"${name}"已创建`, 'success');
+                return groupId;
+            } catch (error) {
+                Utils.log(`创建群聊失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份到localStorage
+                this.saveGroups();
+                this.renderGroupList();
+                UIManager.showNotification(`群聊"${name}"已创建`, 'success');
+                return groupId;
+            }
         },
+
         renderGroupList: function() {
             const groupList = document.getElementById('groupList');
             groupList.innerHTML = '';
@@ -3662,7 +4167,8 @@
             // 显示模态窗口
             document.getElementById('memberManagementModal').style.display = 'block';
         },
-        addMemberToGroup: function(groupId, memberId) {
+
+        addMemberToGroup: async function(groupId, memberId) {
             const group = this.groups[groupId];
             if (!group) return false;
 
@@ -3680,55 +4186,63 @@
 
             // 添加成员
             group.members.push(memberId);
-            this.saveGroups();
 
-            // 更新成员管理界面
-            this.showMemberManagement();
+            try {
+                await DBManager.setItem('groups', group);
 
-            // 更新群聊标题
-            if (this.currentGroupId === groupId) {
-                document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                // 更新成员管理界面
+                this.showMemberManagement();
+
+                // 更新群聊标题
+                if (this.currentGroupId === groupId) {
+                    document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                }
+
+                // 发送系统消息
+                const systemMessage = {
+                    type: 'system',
+                    content: `${UserManager.contacts[memberId]?.name || memberId} 已加入群聊`,
+                    timestamp: new Date().toISOString()
+                };
+
+                // 添加到聊天记录
+                ChatManager.addMessage(groupId, systemMessage);
+
+                // 通知新成员已加入群聊
+                const groupInfo = {
+                    type: 'group-invite',
+                    groupId: groupId,
+                    groupName: group.name,
+                    members: group.members,
+                    owner: group.owner,
+                    sender: UserManager.userId,
+                    timestamp: new Date().toISOString()
+                };
+
+                ConnectionManager.sendTo(memberId, groupInfo);
+
+                // 通知其他成员有新成员加入
+                const memberUpdate = {
+                    type: 'group-member-added',
+                    groupId: groupId,
+                    newMemberId: memberId,
+                    sender: UserManager.userId,
+                    timestamp: new Date().toISOString()
+                };
+
+                this.broadcastToGroup(groupId, memberUpdate, [memberId]);
+
+                UIManager.showNotification(`已将 ${UserManager.contacts[memberId]?.name || memberId} 添加到群聊`, 'success');
+                return true;
+            } catch (error) {
+                Utils.log(`添加群聊成员失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份到localStorage
+                this.saveGroups();
+                return true;
             }
-
-            // 发送系统消息
-            const systemMessage = {
-                type: 'system',
-                content: `${UserManager.contacts[memberId]?.name || memberId} 已加入群聊`,
-                timestamp: new Date().toISOString()
-            };
-
-            // 添加到聊天记录
-            ChatManager.addMessage(groupId, systemMessage);
-
-            // 通知新成员已加入群聊
-            const groupInfo = {
-                type: 'group-invite',
-                groupId: groupId,
-                groupName: group.name,
-                members: group.members,
-                owner: group.owner,
-                sender: UserManager.userId,
-                timestamp: new Date().toISOString()
-            };
-
-            ConnectionManager.sendTo(memberId, groupInfo);
-
-            // 通知其他成员有新成员加入
-            const memberUpdate = {
-                type: 'group-member-added',
-                groupId: groupId,
-                newMemberId: memberId,
-                sender: UserManager.userId,
-                timestamp: new Date().toISOString()
-            };
-
-            this.broadcastToGroup(groupId, memberUpdate, [memberId]);
-
-            UIManager.showNotification(`已将 ${UserManager.contacts[memberId]?.name || memberId} 添加到群聊`, 'success');
-            return true;
         },
 
-        removeMemberFromGroup: function(groupId, memberId) {
+        removeMemberFromGroup: async function(groupId, memberId) {
             const group = this.groups[groupId];
             if (!group) return false;
 
@@ -3742,74 +4256,63 @@
             const index = group.members.indexOf(memberId);
             if (index !== -1) {
                 group.members.splice(index, 1);
-                this.saveGroups();
 
-                // 更新成员管理界面
-                this.showMemberManagement();
+                try {
+                    await DBManager.setItem('groups', group);
 
-                // 更新群聊标题
-                if (this.currentGroupId === groupId) {
-                    document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                    // 更新成员管理界面
+                    this.showMemberManagement();
+
+                    // 更新群聊标题
+                    if (this.currentGroupId === groupId) {
+                        document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                    }
+
+                    // 发送系统消息
+                    const systemMessage = {
+                        type: 'system',
+                        content: `${UserManager.contacts[memberId]?.name || memberId} 已被移出群聊`,
+                        timestamp: new Date().toISOString()
+                    };
+
+                    // 添加到聊天记录
+                    ChatManager.addMessage(groupId, systemMessage);
+
+                    // 通知被移除的成员
+                    const removeNotification = {
+                        type: 'group-removed',
+                        groupId: groupId,
+                        reason: 'removed_by_owner',
+                        sender: UserManager.userId,
+                        timestamp: new Date().toISOString()
+                    };
+
+                    if (ConnectionManager.isConnectedTo(memberId)) {
+                        ConnectionManager.sendTo(memberId, removeNotification);
+                    }
+
+                    // 通知其他成员
+                    const memberUpdate = {
+                        type: 'group-member-removed',
+                        groupId: groupId,
+                        removedMemberId: memberId,
+                        sender: UserManager.userId,
+                        timestamp: new Date().toISOString()
+                    };
+
+                    this.broadcastToGroup(groupId, memberUpdate);
+
+                    UIManager.showNotification(`已将 ${UserManager.contacts[memberId]?.name || memberId} 移出群聊`, 'success');
+                    return true;
+                } catch (error) {
+                    Utils.log(`移除群聊成员失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份到localStorage
+                    this.saveGroups();
+                    return true;
                 }
-
-                // 发送系统消息
-                const systemMessage = {
-                    type: 'system',
-                    content: `${UserManager.contacts[memberId]?.name || memberId} 已被移出群聊`,
-                    timestamp: new Date().toISOString()
-                };
-
-                // 添加到聊天记录
-                ChatManager.addMessage(groupId, systemMessage);
-
-                // 通知被移除的成员
-                const removeNotification = {
-                    type: 'group-removed',
-                    groupId: groupId,
-                    reason: 'removed_by_owner',
-                    sender: UserManager.userId,
-                    timestamp: new Date().toISOString()
-                };
-
-                if (ConnectionManager.isConnectedTo(memberId)) {
-                    ConnectionManager.sendTo(memberId, removeNotification);
-                }
-
-                // 通知其他成员
-                const memberUpdate = {
-                    type: 'group-member-removed',
-                    groupId: groupId,
-                    removedMemberId: memberId,
-                    sender: UserManager.userId,
-                    timestamp: new Date().toISOString()
-                };
-
-                this.broadcastToGroup(groupId, memberUpdate);
-
-                UIManager.showNotification(`已将 ${UserManager.contacts[memberId]?.name || memberId} 移出群聊`, 'success');
-                return true;
             }
 
             return false;
-        },
-
-        clearUnread: function(groupId) {
-            if (this.groups[groupId]) {
-                this.groups[groupId].unread = 0;
-                this.saveGroups();
-                this.renderGroupList();
-            }
-        },
-        updateGroupLastMessage: function(groupId, message, isUnread = false) {
-            if (this.groups[groupId]) {
-                this.groups[groupId].lastMessage = message;
-                this.groups[groupId].lastTime = new Date().toISOString();
-                if (isUnread) {
-                    this.groups[groupId].unread = (this.groups[groupId].unread || 0) + 1;
-                }
-                this.saveGroups();
-                this.renderGroupList();
-            }
         },
 
         // 向群组广播消息（星型拓扑）
@@ -3930,7 +4433,43 @@
             return true;
         },
 
-        handleGroupInvite: function(message) {
+        clearUnread: async function(groupId) {
+            if (this.groups[groupId]) {
+                this.groups[groupId].unread = 0;
+
+                try {
+                    await DBManager.setItem('groups', this.groups[groupId]);
+                    this.renderGroupList();
+                } catch (error) {
+                    Utils.log(`清除群聊未读数失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份到localStorage
+                    this.saveGroups();
+                    this.renderGroupList();
+                }
+            }
+        },
+
+        updateGroupLastMessage: async function(groupId, message, isUnread = false) {
+            if (this.groups[groupId]) {
+                this.groups[groupId].lastMessage = message;
+                this.groups[groupId].lastTime = new Date().toISOString();
+                if (isUnread) {
+                    this.groups[groupId].unread = (this.groups[groupId].unread || 0) + 1;
+                }
+
+                try {
+                    await DBManager.setItem('groups', this.groups[groupId]);
+                    this.renderGroupList();
+                } catch (error) {
+                    Utils.log(`更新群聊最后消息失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份到localStorage
+                    this.saveGroups();
+                    this.renderGroupList();
+                }
+            }
+        },
+
+        handleGroupInvite: async function(message) {
             // 创建或更新本地群组信息
             this.groups[message.groupId] = {
                 id: message.groupId,
@@ -3942,14 +4481,24 @@
                 unread: 1
             };
 
-            this.saveGroups();
-            this.renderGroupList();
+            try {
+                await DBManager.setItem('groups', this.groups[message.groupId]);
+                this.renderGroupList();
 
-            // 显示通知
-            UIManager.showNotification(`您已被邀请加入群聊"${message.groupName}"`, 'info');
+                // 显示通知
+                UIManager.showNotification(`您已被邀请加入群聊"${message.groupName}"`, 'info');
+            } catch (error) {
+                Utils.log(`保存群聊邀请失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份到localStorage
+                this.saveGroups();
+                this.renderGroupList();
+
+                // 显示通知
+                UIManager.showNotification(`您已被邀请加入群聊"${message.groupName}"`, 'info');
+            }
         },
 
-        handleGroupRemoval: function(message) {
+        handleGroupRemoval: async function(message) {
             const groupId = message.groupId;
 
             // 如果群组存在，移除它
@@ -3963,17 +4512,28 @@
                     document.getElementById('chatHeaderActions').style.display = 'none';
                 }
 
-                // 删除群组
-                delete this.groups[groupId];
-                this.saveGroups();
-                this.renderGroupList();
+                try {
+                    // 删除群组
+                    await DBManager.removeItem('groups', groupId);
+                    delete this.groups[groupId];
+                    this.renderGroupList();
 
-                // 显示通知
-                UIManager.showNotification('您已被移出群聊', 'warning');
+                    // 显示通知
+                    UIManager.showNotification('您已被移出群聊', 'warning');
+                } catch (error) {
+                    Utils.log(`处理群聊移除失败: ${error}`, Utils.logLevels.ERROR);
+                    // 备份到localStorage
+                    delete this.groups[groupId];
+                    this.saveGroups();
+                    this.renderGroupList();
+
+                    // 显示通知
+                    UIManager.showNotification('您已被移出群聊', 'warning');
+                }
             }
         },
 
-        handleMembershipUpdate: function(message) {
+        handleMembershipUpdate: async function(message) {
             const groupId = message.groupId;
             const group = this.groups[groupId];
 
@@ -3991,49 +4551,97 @@
                 }
             }
 
-            this.saveGroups();
+            try {
+                await DBManager.setItem('groups', group);
 
-            // 如果当前正在查看该群组，更新标题
-            if (this.currentGroupId === groupId) {
-                document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                // 如果当前正在查看该群组，更新标题
+                if (this.currentGroupId === groupId) {
+                    document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                }
+            } catch (error) {
+                Utils.log(`更新群聊成员失败: ${error}`, Utils.logLevels.ERROR);
+                // 备份到localStorage
+                this.saveGroups();
+
+                // 如果当前正在查看该群组，更新标题
+                if (this.currentGroupId === groupId) {
+                    document.getElementById('currentChatTitle').textContent = `${group.name} (${group.members.length}人)`;
+                }
             }
         }
+
     };
 
     // 初始化应用
     const AppInitializer = {
-        init: function () {
+
+        init: async function () {
             // 检查浏览器兼容性
             if (!UIManager.checkWebRTCSupport()) return;
 
-            // 初始化用户管理
-            UserManager.init();
+            try {
+                // 初始化IndexedDB
+                await DBManager.init();
+                Utils.log('数据库初始化成功', Utils.logLevels.INFO);
 
-            // 初始化聊天管理
-            ChatManager.init();
+                // 初始化用户管理
+                await UserManager.init();
 
-            // 检查网络状态
-            this.checkNetworkType();
+                // 初始化聊天管理
+                await ChatManager.init();
 
-            // 添加网络状态监听
-            this.startNetworkMonitoring();
+                // 检查网络状态
+                this.checkNetworkType();
 
-            // 初始化语音录制按钮（但不申请权限）
-            MediaManager.initVoiceRecording();
+                // 添加网络状态监听
+                this.startNetworkMonitoring();
 
-            // 初始化视频通话按钮（但不申请权限）
-            VideoCallManager.init();
+                // 初始化语音录制按钮（但不申请权限）
+                MediaManager.initVoiceRecording();
 
-            // 添加按钮事件处理程序
-            this.setupEventListeners();
+                // 初始化视频通话按钮（但不申请权限）
+                VideoCallManager.init();
 
-            // 初始化移动端UI
-            this.initMobileUI();
+                // 添加按钮事件处理程序
+                this.setupEventListeners();
 
-            // 初始化群聊管理
-            GroupManager.init();
+                // 初始化移动端UI
+                this.initMobileUI();
 
-            Utils.log('应用已初始化', Utils.logLevels.INFO);
+                // 初始化群聊管理
+                await GroupManager.init();
+
+                Utils.log('应用已初始化', Utils.logLevels.INFO);
+            } catch (error) {
+                Utils.log(`应用初始化失败: ${error}`, Utils.logLevels.ERROR);
+
+                // 回退到localStorage模式
+                Utils.log('回退到localStorage存储模式', Utils.logLevels.WARN);
+
+                // 初始化用户管理
+                UserManager.userId = localStorage.getItem('userId') || Utils.generateId();
+                localStorage.setItem('userId', UserManager.userId);
+                document.getElementById('userIdValue').textContent = UserManager.userId;
+
+                // 加载联系人
+                UserManager.loadContactsFromLocalStorage();
+
+                // 初始化聊天管理
+                ChatManager.loadChatsFromLocalStorage();
+
+                // 其他初始化步骤
+                this.checkNetworkType();
+                this.startNetworkMonitoring();
+                MediaManager.initVoiceRecording();
+                VideoCallManager.init();
+                this.setupEventListeners();
+                this.initMobileUI();
+
+                // 加载群组
+                GroupManager.loadGroupsFromLocalStorage();
+
+                Utils.log('应用已使用localStorage模式初始化', Utils.logLevels.INFO);
+            }
         },
 
         // 初始化移动端UI

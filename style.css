@@ -1317,3 +1317,65 @@ textarea {
     font-size: 15px;
     transition: background-color 0.2s;
 }
+/* 限制图片和视频预览的最大尺寸 */
+.message .file-preview-img,
+.message .file-preview-video,
+#filePreviewContainer .image-preview,
+#filePreviewContainer .video-preview {
+    max-width: 400px; /* 设置最大宽度，例如 400像素 */
+    max-height: 400px; /* 设置最大高度，例如 400像素 */
+    /*
+       使用 max-width 和 max-height 可以确保图片和视频
+       在小于指定尺寸时保持原始大小，大于指定尺寸时等比例缩小，
+       而不会变形。
+       同时 max-width: 100% 确保在容器较小时也能适应。
+    */
+    max-width: 100%; /* 确保在较小的聊天气泡内也能适应 */
+    height: auto;    /* 保持高宽比 */
+    display: block;  /* 将元素设置为块级，避免底部出现额外空间 */
+    margin: 5px 0;   /* 添加一些垂直外边距，使其与周围内容分隔开 */
+    object-fit: contain; /* 确保图片/视频内容适应指定尺寸，不会被拉伸或裁剪 */
+}
+
+/* 可选: 给文件消息容器一些内边距或样式，使内容不紧贴边界 */
+.file-message {
+    padding: 5px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    background-color: #f9f9f9;
+    display: inline-block; /* 或 flex, grid, block tùy theo layout */
+    max-width: calc(100% - 10px); /* 限制容器最大宽度适应气泡 */
+}
+
+/* 可选: 文件信息部分的样式调整 */
+.file-message .file-info {
+    display: flex;
+    align-items: center;
+}
+.file-message .file-icon {
+    font-size: 2em; /* 图标大小 */
+    margin-right: 10px;
+}
+.file-message .file-details {
+    flex-grow: 1;
+}
+.file-message .download-btn, .file-message .download-error {
+    margin-left: 10px;
+    flex-shrink: 0; /* 防止被压缩 */
+}
+
+/* 视频通话界面的视频元素不受此限制 */
+#videoCallContainer video {
+    max-width: none;
+    max-height: none;
+    width: 100%; /* 这些元素通常需要填充容器 */
+    height: 100%;
+    object-fit: cover; /* 视频通话通常是填充并裁剪 */
+}
+
+/* 全屏图片预览的样式仍然保持全屏 */
+.modal img {
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+}
