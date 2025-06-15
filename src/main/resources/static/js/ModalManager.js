@@ -46,23 +46,49 @@ const ModalManager = {
 
         // --- 主菜单/设置模态框 ---
         this.mainMenuModal = document.getElementById('mainMenuModal');
-        const closeMainMenuBtn = document.querySelector('.close-modal-btn[data-modal-id="mainMenuModal"]');
-        if (closeMainMenuBtn) closeMainMenuBtn.addEventListener('click', () => this.toggleModal('mainMenuModal', false));
-        document.getElementById('mainMenuBtn').addEventListener('click', () => {
-            this.toggleModal('mainMenuModal', true);
-            // 打开主菜单时刷新相关 UI 状态
-            if (typeof AppInitializer !== 'undefined' && AppInitializer.refreshNetworkStatusUI) {
-                AppInitializer.refreshNetworkStatusUI();
+        if (this.mainMenuModal) {
+            const closeMainMenuBtn = this.mainMenuModal.querySelector('.close-modal-btn[data-modal-id="mainMenuModal"]');
+            if (closeMainMenuBtn) {
+                closeMainMenuBtn.addEventListener('click', () => this.toggleModal('mainMenuModal', false));
             }
-            if (typeof SettingsUIManager !== 'undefined') {
-                SettingsUIManager.updateMainMenuControlsState();
-            }
-        });
+            // 当点击模态框覆盖层（即非内容区域）时关闭模态框
+            this.mainMenuModal.addEventListener('click', (event) => {
+                if (event.target === this.mainMenuModal) {
+                    this.toggleModal('mainMenuModal', false);
+                }
+            });
+        }
+
+        const mainMenuBtn = document.getElementById('mainMenuBtn');
+        if (mainMenuBtn) {
+            mainMenuBtn.addEventListener('click', () => {
+                this.toggleModal('mainMenuModal', true);
+                // 打开主菜单时刷新相关 UI 状态
+                if (typeof AppInitializer !== 'undefined' && AppInitializer.refreshNetworkStatusUI) {
+                    AppInitializer.refreshNetworkStatusUI();
+                }
+                if (typeof SettingsUIManager !== 'undefined') {
+                    SettingsUIManager.updateMainMenuControlsState();
+                }
+            });
+        }
+
 
         // --- 新建联系人/群组模态框 ---
         this.newContactGroupModal = document.getElementById('newContactGroupModal');
-        const closeNewContactGroupModalBtn = document.querySelector('.close-modal-btn[data-modal-id="newContactGroupModal"]');
-        if (closeNewContactGroupModalBtn) closeNewContactGroupModalBtn.addEventListener('click', () => this.toggleModal('newContactGroupModal', false));
+        if (this.newContactGroupModal) {
+            const closeNewContactGroupModalBtn = this.newContactGroupModal.querySelector('.close-modal-btn[data-modal-id="newContactGroupModal"]');
+            if (closeNewContactGroupModalBtn) {
+                closeNewContactGroupModalBtn.addEventListener('click', () => this.toggleModal('newContactGroupModal', false));
+            }
+            // 当点击模态框覆盖层（即非内容区域）时关闭模态框
+            this.newContactGroupModal.addEventListener('click', (event) => {
+                if (event.target === this.newContactGroupModal) {
+                    this.toggleModal('newContactGroupModal', false);
+                }
+            });
+        }
+
         const newChatFab = document.getElementById('newChatFab');
         if (newChatFab) newChatFab.addEventListener('click', () => this.toggleModal('newContactGroupModal', true));
         // 添加新联系人
@@ -102,6 +128,9 @@ const ModalManager = {
         this.callingModalAvatar = document.getElementById('callingModalAvatar');
         this.callingModalCancelBtn = document.getElementById('callingModalCancelBtn');
         this.videoCallRequestModal = document.getElementById('videoCallRequest');
+
+        // 对于 videoCallRequestModal 和 callingModal，通常不希望点击外部关闭
+        // 所以不为它们添加外部点击关闭的逻辑
     },
 
     /**
@@ -116,6 +145,13 @@ const ModalManager = {
             this.permanentlyCloseOpenSourceInfoModalBtn.addEventListener('click', () => {
                 localStorage.setItem('hideOpenSourceModalPermanently', 'true');
                 this.hideOpenSourceInfoModal();
+            });
+        }
+        if (this.openSourceInfoModal) {
+            this.openSourceInfoModal.addEventListener('click', (event) => {
+                if (event.target === this.openSourceInfoModal) {
+                    this.hideOpenSourceInfoModal();
+                }
             });
         }
     },
@@ -243,6 +279,15 @@ const ModalManager = {
         modalContent.appendChild(modalBody);
         modalContent.appendChild(modalFooter);
         modal.appendChild(modalContent);
+
+        // 点击模态框外部区域关闭
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) {
+                if (onCancel) onCancel(); // 如果提供了取消回调，则执行
+                modal.remove();
+            }
+        });
+
         document.body.appendChild(modal);
     },
 

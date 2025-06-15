@@ -387,7 +387,6 @@ body {
     padding: 10px 0; margin: 12px auto;
     font-size: 0.9em;
     font-family: var(--monospace-font);
-    width: 80%;
     opacity: 0.9;
 }
 .message-sender {

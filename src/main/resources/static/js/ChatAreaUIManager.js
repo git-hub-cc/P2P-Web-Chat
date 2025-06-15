@@ -585,10 +585,38 @@ const ChatAreaUIManager = {
         EventEmitter.on('connectionFailed', failHandler);
 
         if (reconnectButton) {
-            reconnectButton.onclick = () => {
-                if (textElement) textElement.textContent = `正在尝试重新连接到 ${Utils.escapeHtml(peerName)}...`;
+            reconnectButton.onclick = async () => {
+                if (textElement) textElement.textContent = `正在检查信令服务器连接...`;
                 reconnectButton.disabled = true;
-                ConnectionManager.createOffer(peerId, {isSilent: false});
+
+                let signalingServerNowConnected = false;
+                if (ConnectionManager.isWebSocketConnected && ConnectionManager.websocket?.readyState === WebSocket.OPEN) {
+                    signalingServerNowConnected = true;
+                } else {
+                    if (textElement) textElement.textContent = `信令服务器未连接。正在尝试连接...`;
+                    try {
+                        await ConnectionManager.connectWebSocket();
+                        signalingServerNowConnected = ConnectionManager.isWebSocketConnected && ConnectionManager.websocket?.readyState === WebSocket.OPEN;
+                    } catch (wsError) {
+                        Utils.log(`showReconnectPrompt: 重新连接信令服务器失败: ${wsError.message || wsError}`, Utils.logLevels.ERROR);
+                        signalingServerNowConnected = false;
+                    }
+                }
+
+                if (signalingServerNowConnected) {
+                    if (textElement) textElement.textContent = `信令服务器已连接。正在尝试重新连接到 ${Utils.escapeHtml(peerName)} 及其他在线联系人...`;
+                    // 调用 autoConnectToAllContacts，它会尝试连接到所有在线的联系人
+                    // 包括当前这个 peerId (如果它在线的话)
+                    ConnectionManager.autoConnectToAllContacts();
+                    // 注意：这里我们不直接 re-enable reconnectButton。
+                    // successHandler 或 failHandler 会根据特定 peerId 的连接结果来更新或移除此提示。
+                } else {
+                    if (textElement) {
+                        textElement.innerHTML = `无法连接到信令服务器。请检查您的网络，或尝试使用“菜单与设置”中的<br>“AI 与 API 配置 > 高级选项”进行手动连接。`;
+                    }
+                    NotificationManager.showNotification('尝试使用“菜单与设置”中的<“AI 与 API 配置 > 高级选项”进行手动连接。', 'error');
+                    reconnectButton.disabled = false; // 允许用户再次尝试
+                }
             };
         }
         if (cancelButton) {

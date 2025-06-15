@@ -389,7 +389,6 @@ body {
     padding: 10px 0; margin: 12px auto; /* Centered with auto margin */
     font-size: 0.9em;
     font-family: var(--monospace-font); /* Monospace for system log feel */
-    width: 80%; /* Don't span full width */
     opacity: 0.85;
 }
 .message-sender {

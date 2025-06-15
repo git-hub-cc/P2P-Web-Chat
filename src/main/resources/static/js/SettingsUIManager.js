@@ -80,21 +80,21 @@ const SettingsUIManager = {
         if (this.ttsApiEndpointInput) this.ttsApiEndpointInput.addEventListener('blur', () => this.saveAISetting('ttsApiEndpoint', this.ttsApiEndpointInput.value));
 
         // --- 偏好设置 ---
-        if (this.autoConnectToggle) {
-            this.autoConnectToggle.addEventListener('change', (event) => {
-                if (UserManager.userSettings) {
-                    UserManager.updateUserSetting('autoConnectEnabled', event.target.checked);
-                    if (event.target.checked) {
-                        NotificationManager.showNotification('自动连接已启用。将在下次应用启动或成功连接信令服务器时尝试连接。', 'info');
-                        if (ConnectionManager.isWebSocketConnected && ConnectionManager.websocket?.readyState === WebSocket.OPEN) {
-                            ConnectionManager.autoConnectToAllContacts();
-                        }
-                    } else {
-                        NotificationManager.showNotification('自动连接已禁用。', 'info');
-                    }
-                }
-            });
-        }
+        // if (this.autoConnectToggle) {
+        //     this.autoConnectToggle.addEventListener('change', (event) => {
+        //         if (UserManager.userSettings) {
+        //             UserManager.updateUserSetting('autoConnectEnabled', event.target.checked);
+        //             if (event.target.checked) {
+        //                 NotificationManager.showNotification('自动连接已启用。将在下次应用启动或成功连接信令服务器时尝试连接。', 'info');
+        //                 if (ConnectionManager.isWebSocketConnected && ConnectionManager.websocket?.readyState === WebSocket.OPEN) {
+        //                     ConnectionManager.autoConnectToAllContacts();
+        //                 }
+        //             } else {
+        //                 NotificationManager.showNotification('自动连接已禁用。', 'info');
+        //             }
+        //         }
+        //     });
+        // }
 
         // --- 网络状态 ---
         if (this.checkNetworkBtnModal) this.checkNetworkBtnModal.addEventListener('click', async () => {

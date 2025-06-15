@@ -2,6 +2,7 @@
  * @file AppInitializer.js
  * @description 应用的入口点和初始化器。负责按正确顺序加载和初始化所有管理器和 UI 组件，并设置核心事件监听器。
  *              现在确保 ThemeLoader.init() 在 UserManager.init() 之前被 await 调用。
+ *              优化了部分异步任务的并行执行。
  * @module AppInitializer
  * @exports {object} AppInitializer - 包含 init 方法，现在应由 DOMContentLoaded 事件触发。
  * @property {function} init - 应用程序的主初始化函数，是整个应用的启动点。
@@ -23,20 +24,20 @@ const AppInitializer = {
      * 6.  初始化所有 UI 管理器。
      * 7.  初始化媒体和通话的核心逻辑。
      * 8.  设置全局事件监听器和网络监控。
-     * 9.  执行 AI 服务健康检查。
-     * 10. 初始化 WebSocket 连接。
+     * 9.  并行执行 AI 服务健康检查、刷新网络 UI 和初始化 WebSocket 连接。
      * @returns {Promise<void>}
      */
     init: async function () {
+        // --- 阶段 1: 关键的同步设置 ---
         Utils.setLogLevelFromConfig();
         this.initializeGlobalImageErrorHandler();
         if (!UIManager.checkWebRTCSupport()) return;
 
         try {
+            // --- 阶段 2: 核心数据加载 (主要是顺序异步) ---
             await DBManager.init();
             Utils.log('数据库初始化成功', Utils.logLevels.INFO);
 
-            // 1. 初始化 ThemeLoader，确保主题和初始数据已加载
             if (typeof ThemeLoader !== 'undefined' && typeof ThemeLoader.init === 'function') {
                 await ThemeLoader.init();
                 Utils.log('ThemeLoader 初始化完成。', Utils.logLevels.INFO);
@@ -44,14 +45,14 @@ const AppInitializer = {
                 Utils.log('ThemeLoader 或其 init 方法未定义。主题系统可能无法正常工作。', Utils.logLevels.ERROR);
             }
 
-            // 2. 初始化核心数据管理器 (UserManager 现在依赖 ThemeLoader 提供的数据)
             await UserManager.init();
+            // ChatManager.init 和 GroupManager.init 可以考虑并行，但为简单和确保依赖，此处保持顺序
             await ChatManager.init();
             await GroupManager.init();
 
-            // 3. 初始化所有 UI 管理器 (SettingsUIManager 可能也需要 ThemeLoader 的状态)
+            // --- 阶段 3: UI 管理器初始化 (同步, 在核心数据加载后) ---
             ModalManager.init();
-            SettingsUIManager.init();
+            SettingsUIManager.init(); // ThemeLoader 已完成，SettingsUIManager 可以安全初始化
             LayoutManager.init();
             ChatAreaUIManager.init();
             SidebarUIManager.init();
@@ -60,36 +61,59 @@ const AppInitializer = {
             MediaUIManager.init();
             PeopleLobbyManager.init();
 
-            await this.refreshNetworkStatusUI();
-            this.startNetworkMonitoring();
-
+            // --- 阶段 4: 其他同步设置 ---
+            this.startNetworkMonitoring();      // 同步监听器设置
             MediaManager.initVoiceRecording();
             VideoCallManager.init();
-
-            this.setupCoreEventListeners();
+            this.setupCoreEventListeners();     // 依赖管理器对象存在
             this.smartBackToChatList();
 
-            // 执行 AI 服务健康检查
-            try {
-                const isAiHealthy = await AiApiHandler.checkAiServiceHealth();
-                UserManager.updateAiServiceStatus(isAiHealthy);
-                EventEmitter.emit('aiServiceStatusUpdated', UserManager.isAiServiceHealthy);
-            } catch (e) {
-                Utils.log("初始化期间 AI 健康检查出错: " + e.message, Utils.logLevels.ERROR);
-                UserManager.updateAiServiceStatus(false);
-                EventEmitter.emit('aiServiceStatusUpdated', false);
+            // --- 阶段 5: 并行执行的异步操作 ---
+            const asyncOperations = [];
+
+            // 1. 刷新网络 UI (依赖 SettingsUIManager.init())
+            asyncOperations.push(this.refreshNetworkStatusUI());
+
+            // 2. AI 服务健康检查 (依赖 UserManager.init(), AiApiHandler, EventEmitter)
+            const aiHealthCheckTask = async () => {
+                try {
+                    const isAiHealthy = await AiApiHandler.checkAiServiceHealth();
+                    UserManager.updateAiServiceStatus(isAiHealthy);
+                    EventEmitter.emit('aiServiceStatusUpdated', UserManager.isAiServiceHealthy);
+                } catch (e) {
+                    Utils.log("初始化期间 AI 健康检查出错: " + e.message, Utils.logLevels.ERROR);
+                    UserManager.updateAiServiceStatus(false);
+                    EventEmitter.emit('aiServiceStatusUpdated', false);
+                }
+            };
+            asyncOperations.push(aiHealthCheckTask());
+
+            // 3. 初始化 WebSocket 连接
+            // ConnectionManager.initialize() 应该在内部处理好其异步性。
+            // 如果 initialize 仅是触发器，而实际连接是 connectWebSocket() 返回 promise，则应推入后者。
+            // 假设 ConnectionManager.initialize() 包含了连接逻辑或能正确返回连接的 Promise。
+            // 为了安全，我们直接使用 connectWebSocket 的 Promise (如果尚未连接或正在连接)
+            if (ConnectionManager.websocket === null || ConnectionManager.websocket.readyState === WebSocket.CLOSED) {
+                asyncOperations.push(ConnectionManager.connectWebSocket());
+            } else {
+                // 如果已连接或正在连接，initialize 可能是注册用户等操作。
+                // 如果这些操作也是异步的，并且我们想等待它们，也应该让 initialize 返回 promise。
+                // 此处假设如果不是初次连接，initialize 的操作相对较快或不关键阻塞。
+                ConnectionManager.initialize();
             }
 
-            ConnectionManager.initialize();
-            Utils.log('应用已初始化', Utils.logLevels.INFO);
+            await Promise.all(asyncOperations);
+
+            Utils.log('应用已初始化 (所有主要异步任务已启动或完成)', Utils.logLevels.INFO);
+
         } catch (error) {
             Utils.log(`应用初始化失败: ${error.stack || error}`, Utils.logLevels.ERROR);
             NotificationManager.showNotification('应用初始化失败，部分功能可能无法使用。', 'error');
 
-            // 如果核心初始化失败，尝试进入回退模式
+            // --- 回退模式初始化 ---
             if (!UserManager.userId) {
                 UserManager.userId = Utils.generateId(8);
-                UserManager.userSettings.autoConnectEnabled = false;
+                UserManager.userSettings.autoConnectEnabled = false; // 在回退模式下禁用自动连接
                 const userIdEl = document.getElementById('modalUserIdValue');
                 if(userIdEl) userIdEl.textContent = UserManager.userId;
             }
@@ -98,9 +122,13 @@ const AppInitializer = {
             ChatAreaUIManager.init(); SidebarUIManager.init(); DetailsPanelUIManager.init();
             VideoCallUIManager.init(); MediaUIManager.init(); PeopleLobbyManager.init();
 
-            await this.refreshNetworkStatusUI(); this.startNetworkMonitoring();
-            MediaManager.initVoiceRecording(); VideoCallManager.init();
-            this.setupCoreEventListeners(); this.smartBackToChatList();
+            // 在回退模式下仍尝试设置网络监控和基础功能
+            if (typeof this.refreshNetworkStatusUI === 'function') await this.refreshNetworkStatusUI();
+            if (typeof this.startNetworkMonitoring === 'function') this.startNetworkMonitoring();
+            if (typeof MediaManager !== 'undefined' && typeof MediaManager.initVoiceRecording === 'function') MediaManager.initVoiceRecording();
+            if (typeof VideoCallManager !== 'undefined' && typeof VideoCallManager.init === 'function') VideoCallManager.init();
+            if (typeof this.setupCoreEventListeners === 'function') this.setupCoreEventListeners();
+            if (typeof this.smartBackToChatList === 'function') this.smartBackToChatList();
 
             // 隐藏加载覆盖层，并显示开源信息模态框
             const loadingOverlay = document.getElementById('loadingOverlay');
@@ -120,13 +148,9 @@ const AppInitializer = {
         document.addEventListener('error', function(event) {
             const imgElement = event.target;
             if (imgElement && imgElement.tagName === 'IMG') {
-                // 防止无限循环的错误处理
                 if (imgElement.classList.contains('image-load-error-processed')) return;
                 imgElement.classList.add('image-load-error-processed');
-
                 Utils.log(`图片加载失败: ${imgElement.src}。正在尝试使用备用方案。`, Utils.logLevels.WARN);
-
-                // 处理头像图片的备用方案
                 if (imgElement.classList.contains('avatar-image')) {
                     const fallbackText = imgElement.dataset.fallbackText || imgElement.alt || '?';
                     const avatarContainer = imgElement.parentElement;
@@ -141,7 +165,6 @@ const AppInitializer = {
                         avatarContainer.classList.add('avatar-fallback-active');
                     } else { imgElement.style.display = 'none'; }
                 }
-                // 处理消息中图片预览的备用方案
                 else if (imgElement.classList.contains('file-preview-img')) {
                     const placeholder = document.createElement('div');
                     placeholder.className = 'image-message-fallback';
@@ -151,10 +174,9 @@ const AppInitializer = {
                     }
                     else { imgElement.style.display = 'none'; }
                 }
-                // 其他图片，仅添加一个标记类
                 else { imgElement.classList.add('image-load-error'); }
             }
-        }, true); // 使用捕获阶段以尽早处理
+        }, true);
         Utils.log("全局图片错误处理器已初始化。", Utils.logLevels.INFO);
     },
 
@@ -190,7 +212,7 @@ const AppInitializer = {
     handleNetworkChange: async function () {
         if (navigator.onLine) {
             LayoutManager.updateConnectionStatusIndicator('网络已重新连接。正在尝试恢复连接...');
-            ConnectionManager.initialize();
+            ConnectionManager.initialize(); // 尝试重新初始化连接
         } else {
             LayoutManager.updateConnectionStatusIndicator('网络已断开。');
         }
@@ -205,7 +227,6 @@ const AppInitializer = {
         history.pushState(null, null, location.href);
         window.addEventListener('popstate', function(event) {
             const btn = document.querySelector('.back-to-list-btn');
-            // 仅当返回按钮可见时（即在聊天视图中）才执行操作
             if (btn && window.getComputedStyle(btn).getPropertyValue('display') === "block"){
                 history.pushState(null, null, location.href);
                 if (typeof LayoutManager !== 'undefined') LayoutManager.showChatListArea();
@@ -266,7 +287,6 @@ const AppInitializer = {
             Utils.log("AppInitializer: AiApiHandler 或其 handleAiConfigChange 方法未定义，无法监听 aiConfigChanged 事件。", Utils.logLevels.WARN);
         }
 
-
         // --- 全局事件处理器 ---
         const fileInput = document.getElementById('fileInput');
         if (fileInput) fileInput.addEventListener('change', MediaManager.handleFileSelect.bind(MediaManager));
@@ -292,13 +312,11 @@ const AppInitializer = {
         });
 
         // --- 加载覆盖层观察器 ---
-        // 监听初始状态文本的变化，以便在连接成功后自动隐藏加载动画。
         const connectionStatusTextEl = document.getElementById('connectionStatusText');
         const loadingOverlay = document.getElementById('loadingOverlay');
         if (connectionStatusTextEl && loadingOverlay) {
             const observer = new MutationObserver(() => {
                 const statusText = connectionStatusTextEl.textContent.toLowerCase();
-                // **重要**: 以下关键词必须与设置 `connectionStatusTextEl` 内容的地方完全匹配！
                 if (statusText.includes('用户注册成功') ||
                     statusText.includes('信令服务器已连接') ||
                     statusText.includes('已从本地加载') ||
@@ -310,7 +328,7 @@ const AppInitializer = {
                             loadingOverlay.style.display = 'none';
                             ModalManager.showOpenSourceInfoModal();
                         }
-                    }, 500); // 延迟以避免闪烁
+                    }, 500);
                 }
             });
             observer.observe(connectionStatusTextEl, { childList: true, characterData: true, subtree: true });
